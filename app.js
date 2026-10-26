@@ -1,7 +1,7 @@
 const http = require('http');
 const { WebSocketServer } = require('ws');
 const net = require('net');
-const UUID = process.env.UUID || '';
+const UUID = process.env.UUID || 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
 const PORT = process.env.PORT || 3000;
 const server = http.createServer((req,res)=>{res.writeHead(200);res.end('ok')});
 const wss = new WebSocketServer({server});
