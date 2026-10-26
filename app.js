@@ -1,70 +1,63 @@
-import { createServer } from 'http';
-import { WebSocketServer } from 'ws';
-import { createConnection } from 'net';
+const http = require('http');
+const net = require('net');
+const { WebSocketServer } = require('ws');
 
-const UUID = process.env.UUID || 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
+const UUID = (process.env.UUID || 'f47ac10b-58cc-4372-a567-0e02b2c3d479').toLowerCase();
 const PORT = process.env.PORT || 8080;
 
-function isValidUUID(uuid) {
-  return uuid.toLowerCase() === UUID.toLowerCase();
+function checkUUID(uuid){
+  return uuid.replace(/-/g,'').toLowerCase() === UUID.replace(/-/g,'').toLowerCase();
 }
 
-const server = createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('VLESS Server Running');
+const server = http.createServer((req,res)=>{
+  res.writeHead(200);
+  res.end('ok');
 });
 
 const wss = new WebSocketServer({ server });
 
-wss.on('connection', (ws) => {
-  ws.once('message', (msg) => {
-    try {
-      const buf = Buffer.from(msg);
-      if (buf.length < 24) return ws.close();
-      const version = buf[0];
-      const uuid = buf.slice(1, 17).toString('hex').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
-      if (!isValidUUID(uuid)) return ws.close();
-      
-      const optLength = buf[17];
-      const cmd = buf[18 + optLength];
-      if (cmd !== 1 && cmd !== 2) return ws.close(); // 1=TCP, 2=UDP
-      
-      let port = buf.readUInt16BE(18 + optLength + 1);
-      let addrType = buf[18 + optLength + 3];
-      let addrLength = 0;
-      let addr = '';
-      
-      if (addrType === 1) { // IPv4
-        addr = buf.slice(18 + optLength + 4, 18 + optLength + 8).join('.');
-        addrLength = 4;
-      } else if (addrType === 2) { // Domain
-        addrLength = buf[18 + optLength + 4];
-        addr = buf.slice(18 + optLength + 5, 18 + optLength + 5 + addrLength).toString();
-      } else if (addrType === 3) { // IPv6
-        const ipv6 = [];
-        for (let i = 0; i < 16; i += 2) {
-          ipv6.push(buf.readUInt16BE(18 + optLength + 4 + i).toString(16));
-        }
-        addr = ipv6.join(':');
-        addrLength = 16;
-      }
-
-      const payload = buf.slice(18 + optLength + 4 + (addrType === 2 ? 1 : 0) + addrLength + 2);
-      
-      const tcp = createConnection({ host: addr, port }, () => {
-        ws.send(Buffer.from([version, 0]));
-        if (payload.length > 0) tcp.write(payload);
-        ws.on('message', (data) => tcp.write(data));
-        tcp.on('data', (data) => ws.send(data));
-        tcp.on('close', () => ws.close());
-        tcp.on('error', () => ws.close());
-      });
-      tcp.on('error', () => ws.close());
-    } catch (e) {
-      ws.close();
+wss.on('connection', ws => {
+  ws.once('message', msg => {
+    const data = Buffer.from(msg);
+    if(data.length < 24) return ws.close();
+    const uuid = data.slice(1,17).toString('hex').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/,'$1-$2-$3-$4-$5');
+    if(!checkUUID(uuid)) return ws.close();
+    
+    let offset = 18 + data[17];
+    const port = data.readUInt16BE(offset+1);
+    const atype = data[offset+3];
+    offset += 4;
+    let addr = '';
+    if(atype === 1){
+      addr = `${data[offset]}.${data[offset+1]}.${data[offset+2]}.${data[offset+3]}`;
+      offset += 4;
+    }else if(atype === 2){
+      const len = data[offset];
+      offset += 1;
+      addr = data.slice(offset, offset+len).toString();
+      offset += len;
+    }else if(atype === 3){
+      let ipv6 = [];
+      for(let i=0;i<16;i+=2) ipv6.push(data.readUInt16BE(offset+i).toString(16));
+      addr = ipv6.join(':');
+      offset += 16;
+    }else{
+      return ws.close();
     }
+    offset += 2;
+    const firstPayload = data.slice(offset);
+
+    const socket = net.connect(port, addr, ()=>{
+      ws.send(Buffer.from([data[0],0]));
+      if(firstPayload.length) socket.write(firstPayload);
+      ws.on('message', d=> socket.write(d));
+      socket.on('data', d=> ws.send(d));
+      socket.on('end', ()=> ws.close());
+      socket.on('error', ()=> ws.close());
+    });
+    socket.on('error', ()=> ws.close());
   });
-  ws.on('error', () => {});
+  ws.on('error', ()=>{});
 });
 
-server.listen(PORT, () => console.log(`Listening on ${PORT} UUID ${UUID}`));
+server.listen(PORT, ()=> console.log('Running on '+PORT));
